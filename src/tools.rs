@@ -1,6 +1,6 @@
 //! Built-in tool implementations.
 //!
-//! Pi provides 8 built-in tools: read, bash, edit, write, grep, find, ls, hashline_edit.
+//! Pi provides built-in filesystem/process tools plus a generic host-result submission tool.
 //!
 //! Tools are exposed to the model via JSON Schema (see [`crate::provider::ToolDef`]) and executed
 //! locally by the agent loop. Each tool returns structured [`ContentBlock`] output suitable for
@@ -2731,6 +2731,7 @@ impl ToolRegistry {
                 "find" => tools.push(Box::new(FindTool::new(cwd))),
                 "ls" => tools.push(Box::new(LsTool::new(cwd))),
                 "hashline_edit" => tools.push(Box::new(HashlineEditTool::new(cwd))),
+                "submit_result" => tools.push(Box::new(SubmitResultTool)),
                 _ => {}
             }
         }
@@ -2772,6 +2773,85 @@ impl ToolRegistry {
             .iter()
             .find(|t| t.name() == name)
             .map(std::convert::AsRef::as_ref)
+    }
+}
+
+// ============================================================================
+// Host Result Submission Tool
+// ============================================================================
+
+const MAX_SUBMITTED_RESULT_BYTES: usize = 1_000_000;
+
+/// Submit a structured result to an embedding host.
+///
+/// The host owns the result schema and describes it in the active prompt. Pi deliberately keeps
+/// this tool domain-neutral: it only transports a bounded JSON object through the normal tool
+/// lifecycle so RPC clients can validate and consume it without scraping assistant prose.
+pub struct SubmitResultTool;
+
+#[async_trait]
+#[allow(clippy::unnecessary_literal_bound)]
+impl Tool for SubmitResultTool {
+    fn name(&self) -> &str {
+        "submit_result"
+    }
+
+    fn label(&self) -> &str {
+        "Submit result"
+    }
+
+    fn description(&self) -> &str {
+        "Submit the final structured result required by the host. The result object must match the schema and instructions in the active prompt."
+    }
+
+    fn parameters(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "result": {
+                    "type": "object",
+                    "description": "The structured result matching the host-defined schema in the active prompt."
+                }
+            },
+            "required": ["result"],
+            "additionalProperties": false
+        })
+    }
+
+    async fn execute(
+        &self,
+        _tool_call_id: &str,
+        input: serde_json::Value,
+        _on_update: Option<Box<dyn Fn(ToolUpdate) + Send + Sync>>,
+    ) -> Result<ToolOutput> {
+        let result = input
+            .get("result")
+            .filter(|value| value.is_object())
+            .ok_or_else(|| {
+                Error::validation("submit_result requires an object field named 'result'")
+            })?;
+        let result_bytes = serde_json::to_vec(result)
+            .map_err(|err| Error::validation(format!("submit_result is not valid JSON: {err}")))?;
+        if result_bytes.len() > MAX_SUBMITTED_RESULT_BYTES {
+            return Err(Error::validation(format!(
+                "submit_result exceeds the {MAX_SUBMITTED_RESULT_BYTES} byte limit"
+            )));
+        }
+
+        Ok(ToolOutput {
+            content: vec![ContentBlock::Text(TextContent::new(
+                "Structured result accepted by the host.",
+            ))],
+            details: Some(serde_json::json!({
+                "schema": "pi.host_result.v1",
+                "result": result
+            })),
+            is_error: false,
+        })
+    }
+
+    fn effects(&self) -> ToolEffects {
+        ToolEffects::write()
     }
 }
 
@@ -7794,6 +7874,56 @@ mod tests {
     use proptest::prelude::*;
     #[cfg(target_os = "linux")]
     use std::time::Duration;
+
+    #[test]
+    fn submit_result_is_available_through_the_registry() {
+        let cwd = tempfile::tempdir().unwrap();
+        let registry = ToolRegistry::new(&["submit_result"], cwd.path(), None);
+
+        assert_eq!(registry.tools().len(), 1);
+        assert_eq!(
+            registry.get("submit_result").unwrap().name(),
+            "submit_result"
+        );
+    }
+
+    #[test]
+    fn submit_result_preserves_the_host_defined_object() {
+        asupersync::test_utils::run_test(|| async {
+            let input = serde_json::json!({
+                "result": {
+                    "schemaVersion": 2,
+                    "ready": true,
+                    "items": ["one", "two"]
+                }
+            });
+            let output = SubmitResultTool
+                .execute("result-1", input.clone(), None)
+                .await
+                .unwrap();
+            let details = output.details.unwrap();
+
+            assert_eq!(details["schema"], "pi.host_result.v1");
+            assert_eq!(details["result"], input["result"]);
+            assert!(!output.is_error);
+        });
+    }
+
+    #[test]
+    fn submit_result_rejects_a_non_object_result() {
+        asupersync::test_utils::run_test(|| async {
+            let error = SubmitResultTool
+                .execute(
+                    "result-2",
+                    serde_json::json!({"result": "not-an-object"}),
+                    None,
+                )
+                .await
+                .unwrap_err();
+
+            assert!(error.to_string().contains("requires an object"));
+        });
+    }
 
     #[test]
     fn fsync_refusal_classifies_non_posix_durability_errors() {

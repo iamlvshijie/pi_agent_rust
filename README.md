@@ -307,7 +307,7 @@ pi "Write a quicksort implementation"
 
 Watch the response appear token-by-token, with thinking blocks shown inline.
 
-### 8 Built-in Tools
+### 8 Default Built-in Tools
 
 | Tool | Description | Example |
 |------|-------------|---------|
@@ -319,6 +319,10 @@ Watch the response appear token-by-token, with thinking blocks shown inline.
 | `grep` | Search file contents with context | Find all TODO comments |
 | `find` | Discover files by pattern | Find all *.rs files |
 | `ls` | List directory contents | What's in src/? |
+
+Embedding hosts can opt into the non-default `submit_result` tool with
+`--tools ...,submit_result`. It transports a bounded, host-defined JSON object through the normal
+tool event stream, so an RPC client can consume structured results without scraping assistant text.
 
 All tools include:
 - Automatic truncation for large outputs (2000 lines / 1MB)
