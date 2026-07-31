@@ -4156,6 +4156,11 @@ fn rpc_model_from_entry(entry: &ModelEntry) -> Value {
             crate::provider::InputType::Image => "image",
         })
         .collect::<Vec<_>>();
+    let thinking_levels = entry
+        .available_thinking_levels()
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>();
 
     json!({
         "id": entry.model.id,
@@ -4164,6 +4169,7 @@ fn rpc_model_from_entry(entry: &ModelEntry) -> Value {
         "provider": entry.model.provider,
         "baseUrl": entry.model.base_url,
         "reasoning": entry.model.reasoning,
+        "thinkingLevels": thinking_levels,
         "input": input,
         "contextWindow": entry.model.context_window,
         "maxTokens": entry.model.max_tokens,
@@ -5224,28 +5230,8 @@ fn extract_user_text(content: &crate::model::UserContent) -> Option<String> {
     }
 }
 
-/// Returns the available thinking levels for a model.
-/// For reasoning models, returns the full range; for non-reasoning, returns only Off.
 fn available_thinking_levels(entry: &ModelEntry) -> Vec<crate::model::ThinkingLevel> {
-    use crate::model::ThinkingLevel;
-    if entry.model.reasoning {
-        let mut levels = vec![
-            ThinkingLevel::Off,
-            ThinkingLevel::Minimal,
-            ThinkingLevel::Low,
-            ThinkingLevel::Medium,
-            ThinkingLevel::High,
-        ];
-        if entry.supports_xhigh() {
-            levels.push(ThinkingLevel::XHigh);
-        }
-        if entry.supports_max() {
-            levels.push(ThinkingLevel::Max);
-        }
-        levels
-    } else {
-        vec![ThinkingLevel::Off]
-    }
+    entry.available_thinking_levels()
 }
 
 /// Cycles through scoped models (if any) and returns the next model.
@@ -7993,6 +7979,10 @@ export default function init(pi) {
         assert_eq!(value["name"], "claude-opus-4-6");
         assert_eq!(value["provider"], "anthropic");
         assert_eq!(value["reasoning"], true);
+        assert_eq!(
+            value["thinkingLevels"],
+            json!(["off", "minimal", "low", "medium", "high"])
+        );
         assert_eq!(value["contextWindow"], 200_000);
         assert_eq!(value["maxTokens"], 8192);
     }

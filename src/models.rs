@@ -119,12 +119,10 @@ impl ModelEntry {
     /// `reasoning_effort: "max"`.
     ///
     /// DeepSeek reasoning models route through the DeepSeek thinking format on
-    /// the chat-completions transport (see `OpenAIProvider::reasoning_style`), and
-    /// DeepSeek maps the `xhigh` thinking level to `reasoning_effort: "max"` in
-    /// thinking mode (gh #114; https://api-docs.deepseek.com/guides/thinking_mode).
-    /// They therefore genuinely support xhigh — without this the registry clamps
-    /// `XHigh -> High` before `build_request()` runs and the serializer's `"max"`
-    /// arm is dead at runtime.
+    /// the chat-completions transport (see `OpenAIProvider::reasoning_style`).
+    /// DeepSeek's public tiers are off/high/max; the API accepts xhigh only as a
+    /// compatibility alias for max (gh #114;
+    /// https://api-docs.deepseek.com/guides/thinking_mode).
     ///
     /// Detected the same way the transport detects DeepSeek (provider id
     /// `deepseek`, or a `deepseek.com` base URL) AND restricted to reasoning
@@ -152,6 +150,9 @@ impl ModelEntry {
 
         if !self.model.reasoning {
             return vec![ThinkingLevel::Off];
+        }
+        if self.is_deepseek_reasoning_model() {
+            return vec![ThinkingLevel::Off, ThinkingLevel::High, ThinkingLevel::Max];
         }
 
         let mut levels = vec![
@@ -182,6 +183,18 @@ impl ModelEntry {
     ) -> crate::model::ThinkingLevel {
         if !self.model.reasoning {
             return crate::model::ThinkingLevel::Off;
+        }
+        if self.is_deepseek_reasoning_model() {
+            return match thinking {
+                crate::model::ThinkingLevel::Off => crate::model::ThinkingLevel::Off,
+                crate::model::ThinkingLevel::Max | crate::model::ThinkingLevel::XHigh => {
+                    crate::model::ThinkingLevel::Max
+                }
+                crate::model::ThinkingLevel::Minimal
+                | crate::model::ThinkingLevel::Low
+                | crate::model::ThinkingLevel::Medium
+                | crate::model::ThinkingLevel::High => crate::model::ThinkingLevel::High,
+            };
         }
         let mut thinking = thinking;
         if thinking == crate::model::ThinkingLevel::Max && !self.supports_max() {
@@ -3897,7 +3910,7 @@ mod tests {
     }
 
     #[test]
-    fn available_thinking_levels_deepseek_reasoning_includes_xhigh() {
+    fn available_thinking_levels_deepseek_reasoning_uses_public_tiers() {
         use crate::model::ThinkingLevel;
         let entry = make_model_entry_with_provider(
             "deepseek-v4-pro",
@@ -3907,20 +3920,12 @@ mod tests {
         );
         assert_eq!(
             entry.available_thinking_levels(),
-            vec![
-                ThinkingLevel::Off,
-                ThinkingLevel::Minimal,
-                ThinkingLevel::Low,
-                ThinkingLevel::Medium,
-                ThinkingLevel::High,
-                ThinkingLevel::XHigh,
-                ThinkingLevel::Max,
-            ]
+            vec![ThinkingLevel::Off, ThinkingLevel::High, ThinkingLevel::Max,]
         );
     }
 
     #[test]
-    fn clamp_xhigh_preserved_for_deepseek_reasoning() {
+    fn clamp_deepseek_compatibility_aliases_to_public_tiers() {
         use crate::model::ThinkingLevel;
         let entry = make_model_entry_with_provider(
             "deepseek-v4-pro",
@@ -3930,7 +3935,11 @@ mod tests {
         );
         assert_eq!(
             entry.clamp_thinking_level(ThinkingLevel::XHigh),
-            ThinkingLevel::XHigh
+            ThinkingLevel::Max
+        );
+        assert_eq!(
+            entry.clamp_thinking_level(ThinkingLevel::Medium),
+            ThinkingLevel::High
         );
     }
 
@@ -3940,7 +3949,7 @@ mod tests {
     /// (before this fix) downgraded `XHigh -> High` for DeepSeek. This drives the
     /// full chain and asserts the wire body carries `reasoning_effort: "max"`.
     #[test]
-    fn deepseek_reasoning_xhigh_survives_clamp_and_serializes_as_max() {
+    fn deepseek_reasoning_xhigh_normalizes_and_serializes_as_max() {
         use crate::model::ThinkingLevel;
         use crate::provider::{Context, StreamOptions};
 
@@ -3951,12 +3960,12 @@ mod tests {
             "https://api.deepseek.com",
         );
 
-        // (1) The clamp must pass XHigh through (the #114 gap).
+        // (1) The clamp canonicalizes DeepSeek's xhigh compatibility alias to Max.
         let effective = entry.clamp_thinking_level(ThinkingLevel::XHigh);
         assert_eq!(
             effective,
-            ThinkingLevel::XHigh,
-            "clamp must not downgrade xhigh for a DeepSeek reasoning model"
+            ThinkingLevel::Max,
+            "DeepSeek xhigh must canonicalize to max"
         );
 
         // (2) Feed the clamped level into the real request builder.
@@ -4025,7 +4034,7 @@ mod tests {
         );
         assert!(entry.supports_xhigh());
         let effective = entry.clamp_thinking_level(ThinkingLevel::XHigh);
-        assert_eq!(effective, ThinkingLevel::XHigh);
+        assert_eq!(effective, ThinkingLevel::Max);
 
         let provider = crate::providers::openai::OpenAIProvider::new(entry.model.id.as_str())
             .with_provider_name(entry.model.provider.as_str())

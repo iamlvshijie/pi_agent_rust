@@ -65,6 +65,7 @@ fn known_long_option(name: &str) -> Option<LongOptionSpec> {
         | "no-prompt-templates"
         | "no-themes"
         | "list-providers"
+        | "no-project-context"
         | "hide-cwd-in-prompt" => (false, false),
         "provider"
         | "model"
@@ -477,6 +478,10 @@ pub struct Cli {
     pub no_themes: bool,
 
     // === System prompt modifiers ===
+    /// Disable automatic discovery of project context files such as AGENTS.md.
+    #[arg(long, env = "PI_NO_PROJECT_CONTEXT")]
+    pub no_project_context: bool,
+
     /// Hide the current working directory from the system prompt.
     #[arg(long, env = "PI_HIDE_CWD_IN_PROMPT")]
     pub hide_cwd_in_prompt: bool,
@@ -1351,6 +1356,12 @@ mod tests {
     fn no_prompt_templates_flag() {
         let cli = Cli::parse_from(["pi", "--no-prompt-templates"]);
         assert!(cli.no_prompt_templates);
+    }
+
+    #[test]
+    fn no_project_context_flag() {
+        let cli = Cli::parse_from(["pi", "--no-project-context"]);
+        assert!(cli.no_project_context);
     }
 
     // ── 10. Defaults ─────────────────────────────────────────────────

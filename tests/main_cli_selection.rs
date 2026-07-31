@@ -476,6 +476,39 @@ fn build_system_prompt_test_mode_suppresses_ambient_project_context() {
 }
 
 #[test]
+fn build_system_prompt_flag_suppresses_ambient_project_context() {
+    let harness = TestHarness::new("build_system_prompt_flag_suppresses_ambient_project_context");
+    let global_dir = harness.create_dir("global-no-project-context");
+    harness.create_file("global-no-project-context/AGENTS.md", "GLOBAL\n");
+    let project_dir = harness.create_dir("project-no-project-context");
+    std::fs::write(project_dir.join("AGENTS.md"), "PROJECT\n").expect("write project AGENTS");
+
+    let cli = cli::Cli::parse_from([
+        "pi",
+        "--system-prompt",
+        "CUSTOM PROMPT",
+        "--no-project-context",
+    ]);
+    let package_dir = harness.create_dir("package-no-project-context");
+    let prompt = build_system_prompt(
+        &cli,
+        &project_dir,
+        &["read"],
+        None,
+        &global_dir,
+        &package_dir,
+        false,
+        true,
+    )
+    .expect("build system prompt");
+
+    assert!(prompt.contains("CUSTOM PROMPT"));
+    assert!(!prompt.contains("# Project Context"));
+    assert!(!prompt.contains("GLOBAL"));
+    assert!(!prompt.contains("PROJECT"));
+}
+
+#[test]
 fn prepare_initial_message_wraps_files_and_appends_first_message() {
     let harness = TestHarness::new("prepare_initial_message_wraps_files_and_appends_first_message");
     let file_path = harness.create_file("a.txt", "hello\nworld\n");

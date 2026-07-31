@@ -23,6 +23,9 @@ use futures::StreamExt;
 use futures::stream::{self, Stream};
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
+use std::fs::{self, OpenOptions};
+use std::io::Write as _;
+use std::path::Path;
 use std::pin::Pin;
 
 // ============================================================================
@@ -33,6 +36,40 @@ const OPENAI_API_URL: &str = "https://api.openai.com/v1/chat/completions";
 const DEFAULT_MAX_TOKENS: u32 = 4096;
 const OPENROUTER_DEFAULT_HTTP_REFERER: &str = "https://github.com/Dicklesworthstone/pi_agent_rust";
 const OPENROUTER_DEFAULT_X_TITLE: &str = "Pi Agent Rust";
+const PROVIDER_AUDIT_MAX_BYTES: u64 = 24 * 1024 * 1024;
+
+fn write_provider_request_audit(
+    provider: &str,
+    model: &str,
+    url: &str,
+    request_body: &serde_json::Value,
+) {
+    let Ok(path) = std::env::var("PI_PROVIDER_AUDIT_FILE") else {
+        return;
+    };
+    if path.trim().is_empty() {
+        return;
+    }
+    let path = Path::new(&path);
+    if let Some(parent) = path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    if fs::metadata(path).is_ok_and(|metadata| metadata.len() > PROVIDER_AUDIT_MAX_BYTES) {
+        let _ = fs::write(path, "");
+    }
+    let event = serde_json::json!({
+        "type": "final_llm_request",
+        "timestamp_unix_ms": chrono::Utc::now().timestamp_millis(),
+        "provider": provider,
+        "model": model,
+        "url": url,
+        "request": request_body,
+        "credential_headers": "[REDACTED]"
+    });
+    if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) {
+        let _ = writeln!(file, "{event}");
+    }
+}
 
 /// Map a role string (which may come from compat config at runtime) to a `Cow<'_, str>`.
 ///
@@ -389,6 +426,7 @@ impl Provider for OpenAIProvider {
         };
 
         let request_body = self.build_request_json(context, options)?;
+        write_provider_request_audit(self.name(), self.model_id(), &self.base_url, &request_body);
 
         // Note: Content-Type is set by .json() below; setting it here too
         // produces a duplicate header that OpenAI's server rejects.
