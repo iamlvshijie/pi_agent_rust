@@ -4202,6 +4202,27 @@ fn session_state(
         .iter()
         .filter(|entry| matches!(entry, crate::session::SessionEntry::Message(_)))
         .count();
+    let path_entries = session
+        .entries_for_current_path()
+        .into_iter()
+        .cloned()
+        .collect::<Vec<_>>();
+    let estimated_context_tokens =
+        crate::compaction::estimate_context_tokens_for_entries(&path_entries);
+    let compaction_entries = path_entries
+        .iter()
+        .filter_map(|entry| {
+            let crate::session::SessionEntry::Compaction(compaction) = entry else {
+                return None;
+            };
+            Some(compaction)
+        })
+        .collect::<Vec<_>>();
+    let context_window = model
+        .as_ref()
+        .and_then(|value| value.get("contextWindow"))
+        .and_then(Value::as_u64)
+        .unwrap_or_default();
 
     let session_name = session
         .entries_for_current_path()
@@ -4262,6 +4283,32 @@ fn session_state(
     state.insert(
         "messageCount".to_string(),
         Value::Number(message_count.into()),
+    );
+    state.insert(
+        "estimatedContextTokens".to_string(),
+        Value::Number(estimated_context_tokens.into()),
+    );
+    state.insert(
+        "contextWindow".to_string(),
+        Value::Number(context_window.into()),
+    );
+    state.insert(
+        "compactionCount".to_string(),
+        Value::Number(compaction_entries.len().into()),
+    );
+    state.insert(
+        "lastCompactionAt".to_string(),
+        compaction_entries.last().map_or(Value::Null, |entry| {
+            Value::String(entry.base.timestamp.clone())
+        }),
+    );
+    state.insert(
+        "currentLeafId".to_string(),
+        session
+            .header
+            .current_leaf
+            .clone()
+            .map_or(Value::Null, Value::String),
     );
     state.insert(
         "pendingMessageCount".to_string(),

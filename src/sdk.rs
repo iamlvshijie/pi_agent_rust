@@ -492,6 +492,16 @@ pub struct RpcSessionState {
     #[serde(default)]
     pub message_count: usize,
     #[serde(default)]
+    pub estimated_context_tokens: u64,
+    #[serde(default)]
+    pub context_window: u64,
+    #[serde(default)]
+    pub compaction_count: usize,
+    #[serde(default)]
+    pub last_compaction_at: Option<String>,
+    #[serde(default)]
+    pub current_leaf_id: Option<String>,
+    #[serde(default)]
     pub pending_message_count: usize,
     #[serde(default)]
     pub durability_mode: String,

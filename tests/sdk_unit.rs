@@ -240,6 +240,11 @@ fn transport_session_transport_state_variants() {
         auto_compaction_enabled: true,
         auto_retry_enabled: false,
         message_count: 0,
+        estimated_context_tokens: 0,
+        context_window: 0,
+        compaction_count: 0,
+        last_compaction_at: None,
+        current_leaf_id: None,
         pending_message_count: 0,
         durability_mode: "balanced".to_string(),
     }));

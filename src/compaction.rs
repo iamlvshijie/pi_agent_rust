@@ -934,6 +934,21 @@ fn message_from_entry(entry: &SessionEntry) -> Option<SessionMessage> {
     }
 }
 
+/// Return a conservative estimate of the provider context represented by a
+/// session path. This is intentionally generic so RPC clients can make
+/// lifecycle decisions without inspecting or rewriting session messages.
+pub fn estimate_context_tokens_for_entries(entries: &[SessionEntry]) -> u64 {
+    let usage_start = entries
+        .iter()
+        .rposition(|entry| matches!(entry, SessionEntry::Compaction(_)))
+        .unwrap_or(0);
+    let messages = entries[usage_start..]
+        .iter()
+        .filter_map(message_from_entry)
+        .collect::<Vec<_>>();
+    estimate_context_tokens(&messages).tokens
+}
+
 const fn entry_is_message_like(entry: &SessionEntry) -> bool {
     matches!(
         entry,
