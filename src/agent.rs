@@ -1490,6 +1490,7 @@ impl Agent {
 
         // Delivery boundary: start of turn (steering messages queued while idle).
         let mut pending_messages = self.drain_steering_messages().await;
+        let mut terminal_tool_succeeded = false;
 
         loop {
             let mut has_more_tool_calls = true;
@@ -1808,6 +1809,11 @@ impl Agent {
                     };
                     tool_results = outcome.tool_results;
                     steering_after_tools = outcome.steering_messages;
+                    if outcome.terminal_tool_succeeded {
+                        terminal_tool_succeeded = true;
+                        has_more_tool_calls = false;
+                        steering_after_tools = None;
+                    }
                 }
 
                 let tool_messages = tool_results
@@ -1830,10 +1836,16 @@ impl Agent {
 
                 if let Some(steering) = steering_after_tools.take() {
                     pending_messages = steering;
+                } else if terminal_tool_succeeded {
+                    pending_messages.clear();
                 } else {
                     // Delivery boundary: after assistant completion (no tool calls).
                     pending_messages = self.drain_steering_messages().await;
                 }
+            }
+
+            if terminal_tool_succeeded {
+                break;
             }
 
             // Delivery boundary: agent idle (after all tool calls + steering).
@@ -2754,6 +2766,7 @@ impl Agent {
     ) -> Result<ToolExecutionOutcome> {
         let mut results = Vec::new();
         let mut steering_messages: Option<Vec<Message>> = None;
+        let mut terminal_tool_succeeded = false;
 
         // Phase 1: Emit start events for ALL tools up front.
         for tool_call in tool_calls {
@@ -2834,6 +2847,14 @@ impl Agent {
             // If a result was recorded during execution, keep outcome ordering
             // without re-emitting lifecycle events or duplicating transcript entries.
             if let Some(tool_result) = recorded_results.get_mut(index).and_then(Option::take) {
+                if !tool_result.is_error
+                    && self
+                        .tools
+                        .get(&tool_call.name)
+                        .is_some_and(Tool::terminates_turn_on_success)
+                {
+                    terminal_tool_succeeded = true;
+                }
                 results.push(tool_result);
             } else if steering_messages.is_some() {
                 // Skipped due to steering.
@@ -2898,6 +2919,7 @@ impl Agent {
         Ok(ToolExecutionOutcome {
             tool_results: results,
             steering_messages,
+            terminal_tool_succeeded,
         })
     }
 
@@ -3276,6 +3298,7 @@ impl Agent {
 struct ToolExecutionOutcome {
     tool_results: Vec<Arc<ToolResultMessage>>,
     steering_messages: Option<Vec<Message>>,
+    terminal_tool_succeeded: bool,
 }
 
 /// Pre-created extension runtime state for overlapping startup I/O.
@@ -7362,6 +7385,46 @@ mod turn_event_tests {
     }
 
     #[derive(Debug)]
+    struct TerminalEchoTool;
+
+    #[async_trait]
+    #[allow(clippy::unnecessary_literal_bound)]
+    impl Tool for TerminalEchoTool {
+        fn name(&self) -> &str {
+            "echo_tool"
+        }
+
+        fn label(&self) -> &str {
+            "terminal_echo_tool"
+        }
+
+        fn description(&self) -> &str {
+            "terminal echo test tool"
+        }
+
+        fn parameters(&self) -> serde_json::Value {
+            json!({ "type": "object" })
+        }
+
+        async fn execute(
+            &self,
+            _tool_call_id: &str,
+            _input: serde_json::Value,
+            _on_update: Option<Box<dyn Fn(ToolUpdate) + Send + Sync>>,
+        ) -> Result<ToolOutput> {
+            Ok(ToolOutput {
+                content: vec![ContentBlock::Text(TextContent::new("terminal-ok"))],
+                details: None,
+                is_error: false,
+            })
+        }
+
+        fn terminates_turn_on_success(&self) -> bool {
+            true
+        }
+    }
+
+    #[derive(Debug)]
     struct ToolTurnProvider {
         calls: AtomicUsize,
     }
@@ -7737,6 +7800,62 @@ mod turn_event_tests {
                 unreachable!("expected Message::ToolResult, got {:?}", first_result);
             }
             drop(events);
+        });
+    }
+
+    #[test]
+    fn successful_terminal_tool_skips_the_follow_up_provider_turn() {
+        let runtime = RuntimeBuilder::current_thread()
+            .build()
+            .expect("runtime build");
+        let handle = runtime.handle();
+
+        let provider = Arc::new(ToolTurnProvider::new());
+        let provider_calls = Arc::clone(&provider);
+        let tools = ToolRegistry::from_tools(vec![Box::new(TerminalEchoTool)]);
+        let agent = Agent::new(provider, tools, AgentConfig::default());
+        let session = Arc::new(Mutex::new(Session::in_memory()));
+        let mut agent_session =
+            AgentSession::new(agent, session, false, ResolvedCompactionSettings::default());
+
+        let events: Arc<std::sync::Mutex<Vec<AgentEvent>>> =
+            Arc::new(std::sync::Mutex::new(Vec::new()));
+        let events_capture = Arc::clone(&events);
+
+        let join = handle.spawn(async move {
+            agent_session
+                .run_text("hello".to_string(), move |event| {
+                    events_capture
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .push(event);
+                })
+                .await
+                .expect("run_text")
+        });
+
+        runtime.block_on(async move {
+            let message = join.await;
+            assert_eq!(message.stop_reason, StopReason::ToolUse);
+            assert_eq!(provider_calls.calls.load(Ordering::SeqCst), 1);
+
+            let events = events
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            assert_eq!(
+                events
+                    .iter()
+                    .filter(|event| matches!(event, AgentEvent::TurnStart { .. }))
+                    .count(),
+                1
+            );
+            assert_eq!(
+                events
+                    .iter()
+                    .filter(|event| matches!(event, AgentEvent::TurnEnd { .. }))
+                    .count(),
+                1
+            );
         });
     }
 }

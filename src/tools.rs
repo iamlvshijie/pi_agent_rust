@@ -188,6 +188,16 @@ pub trait Tool: Send + Sync {
     fn effects(&self) -> ToolEffects {
         ToolEffects::write()
     }
+
+    /// Whether a successful result completes the current agent request.
+    ///
+    /// Terminal tools are host protocol boundaries: once one succeeds, its result is persisted
+    /// and emitted normally, but the agent loop must not make another provider request merely to
+    /// acknowledge it. Tools are non-terminal by default.
+    #[must_use]
+    fn terminates_turn_on_success(&self) -> bool {
+        false
+    }
 }
 
 /// Tool execution output.
@@ -2852,6 +2862,10 @@ impl Tool for SubmitResultTool {
 
     fn effects(&self) -> ToolEffects {
         ToolEffects::write()
+    }
+
+    fn terminates_turn_on_success(&self) -> bool {
+        true
     }
 }
 
@@ -7884,6 +7898,12 @@ mod tests {
         assert_eq!(
             registry.get("submit_result").unwrap().name(),
             "submit_result"
+        );
+        assert!(
+            registry
+                .get("submit_result")
+                .unwrap()
+                .terminates_turn_on_success()
         );
     }
 
