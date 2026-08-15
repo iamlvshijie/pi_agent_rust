@@ -74,6 +74,7 @@ fn known_long_option(name: &str) -> Option<LongOptionSpec> {
         | "thinking"
         | "system-prompt"
         | "append-system-prompt"
+        | "append-system-prompt-file"
         | "session"
         | "session-dir"
         | "session-durability"
@@ -334,6 +335,10 @@ pub struct Cli {
     /// Append to system prompt (text or file path)
     #[arg(long)]
     pub append_system_prompt: Option<String>,
+
+    /// Append one or more trusted files to the system prompt, in declaration order
+    #[arg(long, value_name = "PATH")]
+    pub append_system_prompt_file: Vec<String>,
 
     // === Session Management ===
     /// Continue previous session
@@ -708,6 +713,40 @@ mod tests {
         ]);
         assert_eq!(cli.system_prompt.as_deref(), Some("You are a helper"));
         assert_eq!(cli.append_system_prompt.as_deref(), Some("Be concise"));
+        assert!(cli.append_system_prompt_file.is_empty());
+    }
+
+    #[test]
+    fn parse_repeated_append_system_prompt_files() {
+        let cli = Cli::parse_from([
+            "pi",
+            "--append-system-prompt-file",
+            "/tmp/base.md",
+            "--append-system-prompt-file",
+            "/tmp/profile.md",
+        ]);
+        assert_eq!(
+            cli.append_system_prompt_file,
+            vec!["/tmp/base.md".to_string(), "/tmp/profile.md".to_string()]
+        );
+    }
+
+    #[test]
+    fn production_parser_preserves_repeated_append_system_prompt_files() {
+        let parsed = parse_with_extension_flags(vec![
+            "pi".to_string(),
+            "--append-system-prompt-file".to_string(),
+            "/tmp/base.md".to_string(),
+            "--append-system-prompt-file".to_string(),
+            "/tmp/profile.md".to_string(),
+        ])
+        .expect("parse production CLI path");
+
+        assert!(parsed.extension_flags.is_empty());
+        assert_eq!(
+            parsed.cli.append_system_prompt_file,
+            vec!["/tmp/base.md".to_string(), "/tmp/profile.md".to_string()]
+        );
     }
 
     #[test]
@@ -1391,6 +1430,7 @@ mod tests {
         assert!(cli.export.is_none());
         assert!(cli.system_prompt.is_none());
         assert!(cli.append_system_prompt.is_none());
+        assert!(cli.append_system_prompt_file.is_empty());
         assert!(cli.list_models.is_none());
         assert!(cli.command.is_none());
         assert!(cli.args.is_empty());

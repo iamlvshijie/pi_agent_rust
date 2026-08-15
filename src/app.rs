@@ -163,6 +163,11 @@ pub fn build_system_prompt(
     let custom_prompt = resolve_prompt_input(cli.system_prompt.as_deref(), "system prompt")?;
     let append_prompt =
         resolve_prompt_input(cli.append_system_prompt.as_deref(), "append system prompt")?;
+    let append_prompt_files = cli
+        .append_system_prompt_file
+        .iter()
+        .map(|value| read_prompt_file(value, "append system prompt file"))
+        .collect::<Result<Vec<_>>>()?;
     let context_files = if test_mode || cli.no_project_context {
         Vec::new()
     } else {
@@ -173,6 +178,11 @@ pub fn build_system_prompt(
         custom_prompt.unwrap_or_else(|| default_system_prompt(enabled_tools, package_dir));
 
     if let Some(append_prompt) = append_prompt {
+        prompt.push_str("\n\n");
+        prompt.push_str(&append_prompt);
+    }
+
+    for append_prompt in append_prompt_files {
         prompt.push_str("\n\n");
         prompt.push_str(&append_prompt);
     }
@@ -220,6 +230,15 @@ fn resolve_prompt_input(input: Option<&str>, description: &str) -> Result<Option
     } else {
         Ok(Some(value.to_string()))
     }
+}
+
+fn read_prompt_file(value: &str, description: &str) -> Result<String> {
+    let path = Path::new(value);
+    if !path.is_file() {
+        anyhow::bail!("Could not read {description} {value}: file does not exist");
+    }
+    std::fs::read_to_string(path)
+        .map_err(|err| anyhow::anyhow!("Could not read {description} {value}: {err}"))
 }
 
 fn default_system_prompt(enabled_tools: &[&str], package_dir: &Path) -> String {
@@ -1254,6 +1273,65 @@ mod tests {
 
     fn registry_with_entries(entries: Vec<ModelEntry>) -> ModelRegistry {
         ModelRegistry::from_entries_for_tests(entries)
+    }
+
+    #[test]
+    fn system_prompt_appends_trusted_files_in_declaration_order() {
+        let dir = tempdir().expect("tempdir");
+        let base = dir.path().join("base.md");
+        let profile = dir.path().join("profile.md");
+        std::fs::write(&base, "WEB BASE PROFILE").expect("write base profile");
+        std::fs::write(&profile, "FAST AGENT PROFILE").expect("write fast profile");
+        let cli = cli::Cli::parse_from([
+            "pi",
+            "--append-system-prompt",
+            "ANDROID RUNTIME",
+            "--append-system-prompt-file",
+            base.to_str().expect("base path"),
+            "--append-system-prompt-file",
+            profile.to_str().expect("profile path"),
+        ]);
+
+        let prompt = build_system_prompt(
+            &cli,
+            dir.path(),
+            &["read"],
+            None,
+            dir.path(),
+            dir.path(),
+            true,
+            false,
+        )
+        .expect("build system prompt");
+
+        let android = prompt.find("ANDROID RUNTIME").expect("android runtime");
+        let web = prompt.find("WEB BASE PROFILE").expect("web profile");
+        let fast = prompt.find("FAST AGENT PROFILE").expect("fast profile");
+        assert!(android < web && web < fast);
+    }
+
+    #[test]
+    fn system_prompt_file_fails_closed_when_missing() {
+        let dir = tempdir().expect("tempdir");
+        let missing = dir.path().join("missing.md");
+        let cli = cli::Cli::parse_from([
+            "pi",
+            "--append-system-prompt-file",
+            missing.to_str().expect("missing path"),
+        ]);
+
+        let error = build_system_prompt(
+            &cli,
+            dir.path(),
+            &["read"],
+            None,
+            dir.path(),
+            dir.path(),
+            true,
+            false,
+        )
+        .expect_err("missing profile must fail closed");
+        assert!(error.to_string().contains("file does not exist"));
     }
 
     #[test]
